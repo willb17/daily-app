@@ -84,6 +84,18 @@ export default function AuthForm() {
     // on success page.tsx detects session via onAuthStateChange
   }
 
+  // ── Password reset / set ────────────────────────────────────────────────
+  async function sendPasswordReset() {
+    if (!email.trim()) { setError('Enter your email address first.'); return }
+    setLoading(true); setError('')
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}/auth/callback`,
+    })
+    setLoading(false)
+    if (err) setError(err.message)
+    else setInfo(`Password reset email sent to ${email}. Check your inbox.`)
+  }
+
   // ── Password sign-up ────────────────────────────────────────────────────
   async function signUpWithPassword(e: React.FormEvent) {
     e.preventDefault()
@@ -205,11 +217,16 @@ export default function AuthForm() {
             </button>
           </form>
 
-          <div style={{ marginTop: '20px', textAlign: 'center' }}>
+          <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
             {pwView === 'signin' ? (
-              <button onClick={() => { setPwView('signup'); setError(''); setInfo('') }} style={{ background: 'none', border: 'none', fontFamily: 'var(--mono)', fontSize: '10px', color: 'var(--ink-faint)', cursor: 'pointer', letterSpacing: '0.1em' }}>
-                No account? Create one →
-              </button>
+              <>
+                <button onClick={() => { setPwView('signup'); setError(''); setInfo('') }} style={{ background: 'none', border: 'none', fontFamily: 'var(--mono)', fontSize: '10px', color: 'var(--ink-faint)', cursor: 'pointer', letterSpacing: '0.1em' }}>
+                  No account? Create one →
+                </button>
+                <button onClick={sendPasswordReset} disabled={loading} style={{ background: 'none', border: 'none', fontFamily: 'var(--mono)', fontSize: '10px', color: 'var(--ink-faint)', cursor: 'pointer', letterSpacing: '0.1em', fontStyle: 'italic' }}>
+                  Forgot password / set password for the first time
+                </button>
+              </>
             ) : (
               <button onClick={() => { setPwView('signin'); setError(''); setInfo('') }} style={{ background: 'none', border: 'none', fontFamily: 'var(--mono)', fontSize: '10px', color: 'var(--ink-faint)', cursor: 'pointer', letterSpacing: '0.1em' }}>
                 ← Already have an account? Sign in
