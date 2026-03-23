@@ -39,6 +39,40 @@ let gateDecisions: Record<number, 'keep' | 'drop' | null> = {}
 // ── UTILS ──
 const TODAY_KEY = () => new Date().toISOString().split('T')[0]
 
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const rawData = atob(base64)
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)))
+}
+
+async function registerPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    alert('Push notifications are not supported in your browser.')
+    return
+  }
+  const permission = await Notification.requestPermission()
+  if (permission !== 'granted') return
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js')
+    await navigator.serviceWorker.ready
+    const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
+    })
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUserId, subscription: sub.toJSON() }),
+    })
+    const btn = document.getElementById('enablePushBtn') as HTMLButtonElement | null
+    if (btn) { btn.textContent = '✓ Notifications enabled'; btn.disabled = true }
+  } catch (err) {
+    console.error('Push subscription failed:', err)
+  }
+}
+
 function getYesterdayKey() {
   const d = new Date(); d.setDate(d.getDate() - 1)
   return d.toISOString().split('T')[0]
@@ -874,6 +908,15 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
     const countdownInterval = setInterval(updateCountdowns, 1000)
     const progressInterval = setInterval(updateDayProgress, 60000)
 
+    // Fix frozen timers on mobile — update immediately when tab becomes visible
+    const onVisible = () => { if (!document.hidden) updateCountdowns() }
+    document.addEventListener('visibilitychange', onVisible)
+
+    // Register service worker for push notifications
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(console.error)
+    }
+
     // Compact mode for countdown row
     const primaryRow = document.getElementById('primaryRow')
     let compactObserver: ResizeObserver | null = null
@@ -909,6 +952,7 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
       if (focusInterval) clearInterval(focusInterval)
       compactObserver?.disconnect()
       document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [userId])
 
@@ -963,7 +1007,7 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
             <div className="cd-sublabel">day ends</div>
           </div>
         </div>
-        <div className="countdowns-secondary" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+        <div className="countdowns-secondary">
           <div className="countdown-cell">
             <div className="cd-label">End of <span id="cdMonthName">month</span></div>
             <div className="cd-value" id="cdMonth">--</div>
@@ -1151,6 +1195,16 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
               <input type="time" className="notify-input" id="settingsTime" defaultValue="06:00" onInput={saveSettings} />
             </div>
             <div className="notify-status" id="settingsStatus">Not saved yet</div>
+          </div>
+
+          <div className="notify-section" style={{ marginTop: '20px' }}>
+            <div className="notify-label">Push Notifications</div>
+            <p style={{ fontSize: '11px', color: 'var(--ink-mid)', lineHeight: '1.7', marginBottom: '14px' }}>
+              Get a browser push notification at 6am every morning — works on mobile and desktop.
+            </p>
+            <button id="enablePushBtn" className="export-btn" onClick={registerPush} style={{ fontSize: '10px' }}>
+              Enable notifications
+            </button>
           </div>
 
           <div style={{ marginTop: '28px', padding: '20px', border: '1px dashed var(--ink-faint)' }}>

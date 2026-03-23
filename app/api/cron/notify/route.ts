@@ -11,32 +11,43 @@
  *     UNIQUE (user_id, sent_date)   -- hard-limit: one row per user per day
  *   );
  *
+ *   CREATE TABLE push_subscriptions (
+ *     user_id      uuid primary key references auth.users(id) on delete cascade,
+ *     subscription jsonb not null,
+ *     created_at   timestamptz default now()
+ *   );
+ *
  * ── REQUIRED ENV VARS (Vercel project settings) ─────────────────────────────
  *   SUPABASE_SERVICE_ROLE_KEY   Supabase > Project Settings > API > service_role
- *   TWILIO_ACCOUNT_SID
- *   TWILIO_AUTH_TOKEN
- *   TWILIO_FROM_NUMBER          e.g. +15551234567
  *   RESEND_API_KEY
  *   RESEND_FROM_EMAIL           e.g. daily@yourdomain.com
+ *   VAPID_PUBLIC_KEY            generate with: npx web-push generate-vapid-keys
+ *   VAPID_PRIVATE_KEY
+ *   VAPID_MAILTO                e.g. mailto:you@email.com
  *   CRON_SECRET                 any random secret — Vercel sends it as Bearer token
  * ────────────────────────────────────────────────────────────────────────────
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import twilio from 'twilio'
+import webpush from 'web-push'
 import { Resend } from 'resend'
 
 const APP_URL = 'https://daily-app-virid.vercel.app'
 
 export async function GET(request: NextRequest) {
   // ── AUTH ────────────────────────────────────────────────────────────────
-  // Vercel automatically sends Authorization: Bearer <CRON_SECRET> for cron routes.
-  // Any other caller without the secret gets a 401.
   const authHeader = request.headers.get('authorization')
   if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  // ── VAPID ────────────────────────────────────────────────────────────────
+  webpush.setVapidDetails(
+    process.env.VAPID_MAILTO ?? `mailto:admin@${new URL(APP_URL).hostname}`,
+    process.env.VAPID_PUBLIC_KEY!,
+    process.env.VAPID_PRIVATE_KEY!
+  )
 
   // ── SUPABASE (service role — bypasses RLS) ──────────────────────────────
   const supabase = createClient(
@@ -49,7 +60,7 @@ export async function GET(request: NextRequest) {
   // ── LOAD USERS ──────────────────────────────────────────────────────────
   const { data: users, error: usersError } = await supabase
     .from('user_settings')
-    .select('user_id, email, phone')
+    .select('user_id, email')
 
   if (usersError) {
     console.error('Failed to read user_settings:', usersError)
@@ -59,6 +70,13 @@ export async function GET(request: NextRequest) {
   if (!users?.length) {
     return NextResponse.json({ ok: true, date: today, message: 'No users found' })
   }
+
+  // ── LOAD PUSH SUBSCRIPTIONS ─────────────────────────────────────────────
+  const { data: subs } = await supabase
+    .from('push_subscriptions')
+    .select('user_id, subscription')
+
+  const subMap = new Map((subs ?? []).map(s => [s.user_id as string, s.subscription]))
 
   // ── HARD DEDUP: who already received a notification today? ──────────────
   const { data: alreadySent } = await supabase
@@ -75,15 +93,11 @@ export async function GET(request: NextRequest) {
   }
 
   // ── CLIENTS ─────────────────────────────────────────────────────────────
-  const twilioClient = twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-  )
   const resend = new Resend(process.env.RESEND_API_KEY)
 
   const results = {
     date: today,
-    sms:   { sent: 0, skipped: 0, errors: 0 },
+    push:  { sent: 0, skipped: 0, errors: 0 },
     email: { sent: 0, skipped: 0, errors: 0 },
   }
 
@@ -98,26 +112,30 @@ export async function GET(request: NextRequest) {
     if (logError) {
       // Unique violation means another concurrent run beat us to this user
       console.warn(`Skipping user ${user.user_id} — already logged (race condition)`)
-      results.sms.skipped++
+      results.push.skipped++
       results.email.skipped++
       continue
     }
 
-    // SMS
-    if (user.phone) {
+    // Web Push
+    const sub = subMap.get(user.user_id)
+    if (sub) {
       try {
-        await twilioClient.messages.create({
-          body: `Good morning. Your day is ready: ${APP_URL}`,
-          from: process.env.TWILIO_FROM_NUMBER,
-          to: user.phone,
-        })
-        results.sms.sent++
+        await webpush.sendNotification(
+          sub as webpush.PushSubscription,
+          JSON.stringify({
+            title: 'Good morning',
+            body: 'Your day is ready.',
+            url: APP_URL,
+          })
+        )
+        results.push.sent++
       } catch (err) {
-        console.error(`SMS error for ${user.user_id}:`, err)
-        results.sms.errors++
+        console.error(`Push error for ${user.user_id}:`, err)
+        results.push.errors++
       }
     } else {
-      results.sms.skipped++
+      results.push.skipped++
     }
 
     // Email
