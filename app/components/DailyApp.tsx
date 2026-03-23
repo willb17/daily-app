@@ -22,7 +22,7 @@ interface ArchiveEntry { date: string; tasks: Task[]; notes: string }
 // These are module-level so all the imperative DOM functions can reference them
 // without prop-drilling. They're reset in useEffect when the component mounts.
 let state: DayData = { tasks: [], notes: '' }
-let currentType: 'task' | 'anchor' = 'task'
+let currentType: 'task' | 'anchor' | 'habit' = 'task'
 let currentUserId = ''
 let cachedGoals: Goal[] = []
 let cachedArchiveEntries: ArchiveEntry[] = []
@@ -40,6 +40,14 @@ let gateDecisions: Record<number, 'keep' | 'drop' | null> = {}
 
 // ── UTILS ──
 const TODAY_KEY = () => new Date().toISOString().split('T')[0]
+
+function formatMs(ms: number) {
+  if (ms < 0) ms = 0
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  const s = Math.floor((ms % 60000) / 1000)
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+}
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
@@ -431,44 +439,100 @@ function updateCountdowns() {
   if (cd60El) cd60El.textContent = days60.toLocaleString()
   const cd60YearsEl = document.getElementById('cd60Years')
   if (cd60YearsEl) cd60YearsEl.textContent = years60
+
+  // ── Mobile compact strip ──
+  const ccLabel = document.getElementById('ccLabel')
+  const ccTime  = document.getElementById('ccTime')
+  if (ccLabel && ccTime) {
+    if (isPastWorkEnd) {
+      ccLabel.textContent = '→ 11PM'
+      ccTime.textContent  = formatMs(Math.max(0, eleven.getTime() - now.getTime()))
+    } else {
+      ccLabel.textContent = `→ ${wde > 12 ? wde - 12 : wde}${wde >= 12 ? 'PM' : 'AM'}`
+      ccTime.textContent  = formatMs(Math.max(0, workEnd.getTime() - now.getTime()))
+    }
+  }
+  const ccMonthName2 = document.getElementById('ccMonthName2')
+  const ccMonthVal   = document.getElementById('ccMonthVal')
+  const ccYearLabel  = document.getElementById('ccYearLabel')
+  const ccYearVal    = document.getElementById('ccYearVal')
+  if (ccMonthName2) ccMonthName2.textContent = monthName.slice(0, 3).toUpperCase()
+  if (ccMonthVal)   ccMonthVal.textContent   = String(monthDays)
+  if (ccYearLabel)  ccYearLabel.textContent  = String(now.getFullYear())
+  if (ccYearVal)    ccYearVal.textContent    = String(yearDays)
 }
 
 // ── TASKS ──
-function setType(t: 'task' | 'anchor') {
+function setType(t: 'task' | 'anchor' | 'habit') {
   currentType = t
-  const taskBtn = document.getElementById('toggleTask')
+  const taskBtn   = document.getElementById('toggleTask')
   const anchorBtn = document.getElementById('toggleAnchor')
-  if (taskBtn) taskBtn.className = 'toggle-btn' + (t === 'task' ? ' active' : '')
+  const habitBtn  = document.getElementById('toggleHabit')
+  if (taskBtn)   taskBtn.className   = 'toggle-btn' + (t === 'task'   ? ' active' : '')
   if (anchorBtn) anchorBtn.className = 'toggle-btn' + (t === 'anchor' ? ' active' : '')
+  if (habitBtn)  habitBtn.className  = 'toggle-btn' + (t === 'habit'  ? ' active' : '')
   const timeInput = document.getElementById('anchorTime') as HTMLInputElement | null
   if (timeInput) timeInput.style.display = t === 'anchor' ? 'block' : 'none'
   const taskInput = document.getElementById('taskInput') as HTMLInputElement | null
-  if (taskInput) taskInput.placeholder = t === 'anchor'
-    ? 'e.g. "call aunt m at 5" or "dinner with Noah"...'
-    : 'add something to do...'
+  if (taskInput) {
+    if (t === 'anchor') taskInput.placeholder = 'e.g. "call aunt m at 5" or "dinner with Noah"...'
+    else if (t === 'habit') taskInput.placeholder = 'add a recurring habit...'
+    else taskInput.placeholder = 'add something to do...'
+  }
 }
 
 function parseTimeFromText(text: string) {
+  // Each entry: [regex, hourGroup, minGroup, meridiemGroup]
+  // Ordered most-specific first so longer matches win.
   const patterns: [RegExp, number, number | null, number | null][] = [
+    // "at HH:MM am/pm"
     [/\bat\s+(\d{1,2}):(\d{2})\s*(am|pm)\b/i,    1, 2, 3],
+    // "at HH:MM"
     [/\bat\s+(\d{1,2}):(\d{2})/i,                 1, 2, null],
+    // "at H am/pm"
     [/\bat\s+(\d{1,2})\s*(am|pm)\b/i,             1, null, 2],
+    // "at H"
     [/\bat\s+(\d{1,2})\b/i,                        1, null, null],
+    // "@HH:MM am/pm" or "@HH:MM"
     [/@\s*(\d{1,2}):(\d{2})\s*(am|pm)?/i,         1, 2, 3],
+    // "@H am/pm" or "@H"
     [/@\s*(\d{1,2})\s*(am|pm)?/i,                  1, null, 2],
+    // "HH:MM am/pm"
     [/\b(\d{1,2}):(\d{2})\s*(am|pm)\b/i,          1, 2, 3],
+    // "H am/pm"
     [/\b(\d{1,2})\s*(am|pm)\b/i,                   1, null, 2],
+    // Bare 3-4 digit block: 945, 1030, 930pm, 845am
+    // Must be at start or end of text (or surrounded by non-digit) to avoid matching phone numbers
+    [/(?:^|\s)(\d{3,4})(am|pm)?\b/i,              1, null, 2],
   ]
+
   for (const [re, hg, mg, pg] of patterns) {
     const m = text.match(re)
     if (!m) continue
-    let h = parseInt(m[hg], 10)
-    const min = mg && m[mg] ? parseInt(m[mg], 10) : 0
+
+    let raw = m[hg]
+    let h: number, min: number
+
+    // Handle bare 3-4 digit block (e.g. 945 → 9:45, 1030 → 10:30)
+    if (raw.length >= 3) {
+      if (raw.length === 3) { h = parseInt(raw[0], 10); min = parseInt(raw.slice(1), 10) }
+      else                  { h = parseInt(raw.slice(0, 2), 10); min = parseInt(raw.slice(2), 10) }
+      if (min >= 60) continue // not a valid time
+    } else {
+      h   = parseInt(raw, 10)
+      min = mg && m[mg] ? parseInt(m[mg], 10) : 0
+    }
+
     const mer = pg && m[pg] ? m[pg].toLowerCase() : null
-    if (mer === 'pm' && h < 12) h += 12
+    if      (mer === 'pm' && h < 12)  h += 12
     else if (mer === 'am' && h === 12) h = 0
-    else if (!mer) { if (h >= 1 && h <= 7) h += 12 }
-    const cleaned = text.replace(m[0], '').replace(/\s{2,}/g, ' ').trim().replace(/^[-,\s]+|[-,\s]+$/g, '')
+    else if (!mer) {
+      // Ambiguous: 8-11 → AM, 1-7 → PM, 12 → noon (PM)
+      if      (h >= 1 && h <= 7)  h += 12
+      else if (h === 12)          h = 12  // noon
+    }
+
+    const cleaned = text.replace(m[0].trimStart(), '').replace(/\s{2,}/g, ' ').trim().replace(/^[-,\s]+|[-,\s]+$/g, '')
     return { h, min, cleaned }
   }
   return null
@@ -488,34 +552,42 @@ function timeSort(a: Task, b: Task) {
   return aMin - bMin
 }
 
-function addItem() {
+function addTask() {
   const input = document.getElementById('taskInput') as HTMLInputElement | null
   if (!input) return
   const text = input.value.trim()
   if (!text) return
-  const timePicker = document.getElementById('anchorTime') as HTMLInputElement | null
+  state.tasks.push({ id: Date.now(), type: 'task', text, done: false })
+  saveDay(state); renderTasks(); updateStats()
+  input.value = ''; input.focus()
+}
+
+function addAnchor() {
+  const input = document.getElementById('anchorInput') as HTMLInputElement | null
+  if (!input) return
+  const text = input.value.trim()
+  if (!text) return
   const parsed = parseTimeFromText(text)
-  const isAnchor = currentType === 'anchor' || !!parsed
-  const item: Task = { id: Date.now(), type: isAnchor ? 'anchor' : 'task', text, done: false }
-  if (isAnchor) {
-    if (timePicker?.value) {
-      const [h, min] = timePicker.value.split(':').map(Number)
-      item.anchorH = h; item.anchorMin = min; item.text = text
-      timePicker.value = ''
-    } else if (parsed) {
-      item.anchorH = parsed.h; item.anchorMin = parsed.min
-      item.text = parsed.cleaned || text
-    } else {
-      item.anchorH = null; item.anchorMin = null
-    }
-    if (currentType !== 'anchor') setType('anchor')
+  const item: Task = { id: Date.now(), type: 'anchor', text, done: false }
+  if (parsed) { item.anchorH = parsed.h; item.anchorMin = parsed.min; item.text = parsed.cleaned || text }
+  else        { item.anchorH = null; item.anchorMin = null }
+  state.tasks.push(item); saveDay(state); renderTasks(); updateStats()
+  input.value = ''; input.focus()
+}
+
+async function addHabit() {
+  const input = document.getElementById('habitInput') as HTMLInputElement | null
+  if (!input || !currentUserId) return
+  const text = input.value.trim()
+  if (!text) return
+  const icon = GOAL_ICONS[cachedGoals.length % GOAL_ICONS.length]
+  const { data, error } = await supabase.from('goals').insert({ user_id: currentUserId, text, icon }).select().single()
+  if (!error && data) {
+    cachedGoals.push({ id: data.id, text: data.text, icon: data.icon })
+    state.tasks.push({ id: Date.now(), type: 'task', text, done: false, fromGoal: true })
+    saveDay(state); renderTasks(); updateStats()
   }
-  state.tasks.push(item)
-  saveDay(state)
-  renderTasks()
-  updateStats()
-  input.value = ''
-  input.focus()
+  input.value = ''; input.focus()
 }
 
 function toggleDone(id: number) {
@@ -565,6 +637,29 @@ function renderTasks() {
           <button class="focus-btn" onclick="enterFocus(${item.id})" title="Focus on this task">▶ focus</button>
           <button class="delete-btn" onclick="deleteItem(${item.id})">×</button>
         </div>`).join('')
+    }
+  }
+
+  // Habit suggestions: habits not yet on today's list
+  const suggestEl = document.getElementById('habitSuggestions')
+  if (suggestEl) {
+    const activeTasks = state.tasks.filter(t => t.type === 'task')
+    const activeTexts = new Set(activeTasks.map(t => t.text))
+    const pending = cachedGoals.filter(g => !activeTexts.has(g.text))
+    if (!pending.length) {
+      suggestEl.innerHTML = ''
+    } else {
+      suggestEl.innerHTML = `
+        <div class="habit-suggestions">
+          <div class="task-section-header">Habits</div>
+          ${pending.map(g => `
+            <div class="habit-suggest-item">
+              <span class="habit-icon">${g.icon}</span>
+              <span class="habit-text">${escapeHTML(g.text)}</span>
+              <button class="habit-add-btn" onclick="nudgeGoal(${g.id})">+ today</button>
+              <button class="habit-delete-btn" onclick="deleteGoal(${g.id})" title="Remove habit">×</button>
+            </div>`).join('')}
+        </div>`
     }
   }
 }
@@ -970,7 +1065,6 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
       if (notesArea) notesArea.value = state.notes || ''
       updateStats()
       applySettings(settingsData)
-      renderGoals()
       renderArchive() // async, updates when ready
       updateDayProgress()
       checkMorningGate()
@@ -1061,6 +1155,26 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
           >
             ☰
           </button>
+        </div>
+      </div>
+
+      {/* Mobile compact countdown strip */}
+      <div className="countdowns-compact">
+        <div className="cc-item">
+          <span className="cc-label" id="ccLabel">→ 6PM</span>
+          <span className="cc-time" id="ccTime">--:--:--</span>
+        </div>
+        <span className="cc-dot">·</span>
+        <div className="cc-item">
+          <span className="cc-label" id="ccMonthName2">MAR</span>
+          <span className="cc-time" id="ccMonthVal">--</span>
+          <span className="cc-unit">d</span>
+        </div>
+        <span className="cc-dot">·</span>
+        <div className="cc-item">
+          <span className="cc-label" id="ccYearLabel">2026</span>
+          <span className="cc-time" id="ccYearVal">--</span>
+          <span className="cc-unit">d</span>
         </div>
       </div>
 
@@ -1158,28 +1272,52 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
                 <span id="taskProgress" style={{ color: 'var(--ink-mid)' }}>0 / 0 done</span>
               </div>
             </div>
-            <div className="task-input-row">
-              <div className="task-type-toggle">
-                <button className="toggle-btn active" id="toggleTask" onClick={() => setType('task')}>Task</button>
-                <button className="toggle-btn" id="toggleAnchor" onClick={() => setType('anchor')}>Anchor</button>
-              </div>
-              <input
-                type="text"
-                className="task-input"
-                id="taskInput"
-                placeholder="add something..."
-                onKeyDown={e => { if (e.key === 'Enter') addItem() }}
-              />
-              <input type="time" className="time-input" id="anchorTime" style={{ display: 'none' }} title="Set time" />
-              <button className="add-btn" onClick={addItem}>+ Add</button>
-            </div>
+
+            {/* Tasks section */}
             <div className="task-section">
-              <div className="task-section-header">Tasks — things to do</div>
+              <div className="task-section-header">Tasks</div>
               <div id="taskList"><div className="empty-state">No tasks yet — what needs to get done today?</div></div>
+              <div className="inline-add-row">
+                <input
+                  type="text"
+                  className="task-input"
+                  id="taskInput"
+                  placeholder="add a task..."
+                  onKeyDown={e => { if (e.key === 'Enter') addTask() }}
+                />
+                <button className="add-btn" onClick={addTask}>+</button>
+              </div>
             </div>
+
+            {/* Anchors section */}
             <div className="task-section" id="anchorSection">
               <div className="task-section-header">Anchors — fixed events</div>
               <div id="anchorList"><div className="empty-state">No anchors yet — meetings, dinners, deadlines</div></div>
+              <div className="inline-add-row">
+                <input
+                  type="text"
+                  className="task-input"
+                  id="anchorInput"
+                  placeholder='e.g. "945 call hamzah" or "dinner 7pm"'
+                  onKeyDown={e => { if (e.key === 'Enter') addAnchor() }}
+                />
+                <button className="add-btn" onClick={addAnchor}>+</button>
+              </div>
+            </div>
+
+            {/* Habits section */}
+            <div className="task-section">
+              <div id="habitSuggestions"></div>
+              <div className="inline-add-row" style={{ marginTop: '8px' }}>
+                <input
+                  type="text"
+                  className="task-input"
+                  id="habitInput"
+                  placeholder="add a recurring habit..."
+                  onKeyDown={e => { if (e.key === 'Enter') addHabit() }}
+                />
+                <button className="add-btn" onClick={addHabit} title="Add habit">+ habit</button>
+              </div>
             </div>
           </div>
 
@@ -1212,28 +1350,6 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
         </div>
       </div>
 
-      {/* Goals Section */}
-      <div className="goals-section">
-        <div className="goals-header">
-          <div>
-            <div className="goals-label">Daily Intentions</div>
-            <div className="goals-sublabel">
-              things you want to do every day — tap <strong style={{ fontWeight: 500, color: 'var(--ink-mid)' }}>+ today</strong> to add one to this morning&apos;s list
-            </div>
-          </div>
-        </div>
-        <div className="goals-grid" id="goalsList"></div>
-        <div className="add-goal-row">
-          <input
-            type="text"
-            className="goal-input"
-            id="goalInput"
-            placeholder="e.g. read for an hour, go to gym, meditate, no phone before 9am..."
-            onKeyDown={e => { if (e.key === 'Enter') addGoal() }}
-          />
-          <button className="add-btn" onClick={addGoal}>+ Add</button>
-        </div>
-      </div>
 
       {/* Drawer overlay */}
       <div className="drawer-overlay" id="drawerOverlay" onClick={closeDrawer}></div>
