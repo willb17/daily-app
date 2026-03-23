@@ -28,6 +28,8 @@ let cachedGoals: Goal[] = []
 let cachedArchiveEntries: ArchiveEntry[] = []
 let cachedYesterdayData: DayData | null = null
 let cachedSettingsEmail = ''
+let cachedWorkDayStart = 6   // hours (24h), from user_settings.work_day_start
+let cachedWorkDayEnd   = 18  // hours (24h), from user_settings.work_day_end
 
 let focusDuration = 25
 let focusRemaining = 25 * 60
@@ -93,18 +95,24 @@ function saveDay(data: DayData) {
 
 async function saveSettings() {
   if (!currentUserId) return
-  const emailEl = document.getElementById('settingsEmail') as HTMLInputElement | null
-  const phoneEl = document.getElementById('settingsPhone') as HTMLInputElement | null
-  const timeEl = document.getElementById('settingsTime') as HTMLInputElement | null
-  const statusEl = document.getElementById('settingsStatus')
-  const email = emailEl?.value || ''
-  const phone = phoneEl?.value || ''
-  const wake_time = timeEl?.value || ''
-  cachedSettingsEmail = email
+  const emailEl      = document.getElementById('settingsEmail')     as HTMLInputElement | null
+  const phoneEl      = document.getElementById('settingsPhone')     as HTMLInputElement | null
+  const wakeEl       = document.getElementById('settingsWake')      as HTMLInputElement | null
+  const wdStartEl    = document.getElementById('settingsWdStart')   as HTMLInputElement | null
+  const wdEndEl      = document.getElementById('settingsWdEnd')     as HTMLInputElement | null
+  const statusEl     = document.getElementById('settingsStatus')
+  const email          = emailEl?.value       || ''
+  const phone          = phoneEl?.value       || ''
+  const wake_time      = wakeEl?.value        || '06:00'
+  const work_day_start = wdStartEl?.value     || '06:00'
+  const work_day_end   = wdEndEl?.value       || '18:00'
+  cachedSettingsEmail   = email
+  cachedWorkDayStart    = parseInt(work_day_start.split(':')[0])
+  cachedWorkDayEnd      = parseInt(work_day_end.split(':')[0])
 
   const { error } = await supabase
     .from('user_settings')
-    .upsert({ user_id: currentUserId, email, phone, wake_time }, { onConflict: 'user_id' })
+    .upsert({ user_id: currentUserId, email, phone, wake_time, work_day_start, work_day_end }, { onConflict: 'user_id' })
 
   if (statusEl) {
     statusEl.textContent = error ? '✗ Save failed' : '✓ Saved'
@@ -112,15 +120,19 @@ async function saveSettings() {
   }
 }
 
-function applySettings(s: { email?: string; phone?: string; wake_time?: string } | null) {
+function applySettings(s: { email?: string; phone?: string; wake_time?: string; work_day_start?: string; work_day_end?: string } | null) {
   if (!s) return
-  const emailEl = document.getElementById('settingsEmail') as HTMLInputElement | null
-  const phoneEl = document.getElementById('settingsPhone') as HTMLInputElement | null
-  const timeEl = document.getElementById('settingsTime') as HTMLInputElement | null
-  const statusEl = document.getElementById('settingsStatus')
-  if (s.email && emailEl) { emailEl.value = s.email; cachedSettingsEmail = s.email }
-  if (s.phone && phoneEl) phoneEl.value = s.phone
-  if (s.wake_time && timeEl) timeEl.value = s.wake_time
+  const emailEl   = document.getElementById('settingsEmail')   as HTMLInputElement | null
+  const phoneEl   = document.getElementById('settingsPhone')   as HTMLInputElement | null
+  const wakeEl    = document.getElementById('settingsWake')    as HTMLInputElement | null
+  const wdStartEl = document.getElementById('settingsWdStart') as HTMLInputElement | null
+  const wdEndEl   = document.getElementById('settingsWdEnd')   as HTMLInputElement | null
+  const statusEl  = document.getElementById('settingsStatus')
+  if (s.email          && emailEl)   { emailEl.value   = s.email;          cachedSettingsEmail = s.email }
+  if (s.phone          && phoneEl)   phoneEl.value   = s.phone
+  if (s.wake_time      && wakeEl)    wakeEl.value    = s.wake_time
+  if (s.work_day_start && wdStartEl) { wdStartEl.value = s.work_day_start; cachedWorkDayStart = parseInt(s.work_day_start.split(':')[0]) }
+  if (s.work_day_end   && wdEndEl)   { wdEndEl.value   = s.work_day_end;   cachedWorkDayEnd   = parseInt(s.work_day_end.split(':')[0]) }
   if ((s.email || s.phone) && statusEl) {
     statusEl.textContent = '✓ Saved'
     statusEl.className = 'notify-status configured'
@@ -205,23 +217,69 @@ async function renderArchive() {
     notes: row.notes ?? '',
   }))
 
-  const el = document.getElementById('archiveList')
+  renderDrawerArchive()
+}
+
+function renderDrawerArchive() {
+  const el = document.getElementById('drawerArchiveList')
   if (!el) return
   if (!cachedArchiveEntries.length) {
-    el.innerHTML = '<div class="empty-state">No past days yet. Close a day to start building your archive.</div>'
+    el.innerHTML = '<div class="empty-state">No past days yet.</div>'
     return
   }
   el.innerHTML = cachedArchiveEntries.map(row => {
-    const tasks = row.tasks.filter(t => t.type === 'task')
-    const done = tasks.filter(t => t.done).length
-    const pct = tasks.length ? Math.round(done / tasks.length * 100) : 0
+    const tasks   = row.tasks.filter(t => t.type === 'task')
+    const anchors = row.tasks.filter(t => t.type === 'anchor')
+    const done    = tasks.filter(t => t.done).length
+    const pct     = tasks.length ? Math.round(done / tasks.length * 100) : 0
     const dateDisp = new Date(row.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-    return `<div class="archive-item" onclick="viewArchiveDay('${row.date}')">
-      <div class="archive-date">${dateDisp}</div>
-      <div class="archive-stats">${tasks.length} tasks · ${row.tasks.filter(t => t.type === 'anchor').length} anchors</div>
-      <div class="archive-completion">${pct}% done</div>
-    </div>`
+    const anchorHTML = anchors.length
+      ? anchors.map(a => `<div class="da-detail-item">• ${escapeHTML(a.text)}</div>`).join('')
+      : '<div class="da-detail-item muted">none</div>'
+    const taskHTML = tasks.length
+      ? tasks.map(t => `<div class="da-detail-item ${t.done ? 'done' : ''}"><span class="da-check">${t.done ? '✓' : '○'}</span> ${escapeHTML(t.text)}</div>`).join('')
+      : '<div class="da-detail-item muted">none</div>'
+    const notesHTML = row.notes
+      ? `<div class="da-section-label">Notes</div><div class="da-notes">${escapeHTML(row.notes)}</div>`
+      : ''
+    return `
+      <div class="da-item" onclick="toggleArchiveExpand('${row.date}')">
+        <div class="da-row">
+          <div class="archive-date">${dateDisp}</div>
+          <div class="archive-stats">${anchors.length} anchors · ${tasks.length} tasks</div>
+          <div class="archive-completion">${pct}%</div>
+          <span class="da-chevron" id="dachevron-${row.date}">›</span>
+        </div>
+        <div class="da-expand" id="daexpand-${row.date}">
+          ${anchors.length ? `<div class="da-section-label">Anchors</div>${anchorHTML}` : ''}
+          <div class="da-section-label">Tasks</div>${taskHTML}
+          ${notesHTML}
+        </div>
+      </div>`
   }).join('')
+}
+
+function toggleArchiveExpand(date: string) {
+  const expand  = document.getElementById('daexpand-' + date)
+  const chevron = document.getElementById('dachevron-' + date)
+  if (!expand) return
+  const isOpen = expand.classList.contains('open')
+  expand.classList.toggle('open', !isOpen)
+  if (chevron) chevron.style.transform = isOpen ? '' : 'rotate(90deg)'
+}
+
+// ── DRAWER ──
+function openDrawer() {
+  renderDrawerArchive()
+  document.getElementById('drawer')?.classList.add('open')
+  document.getElementById('drawerOverlay')?.classList.add('open')
+  document.body.style.overflow = 'hidden'
+}
+
+function closeDrawer() {
+  document.getElementById('drawer')?.classList.remove('open')
+  document.getElementById('drawerOverlay')?.classList.remove('open')
+  document.body.style.overflow = ''
 }
 
 // archiveToday: data is already persisted via saveDay; just refresh the archive list
@@ -272,16 +330,16 @@ function updateDayHeader() {
 // ── DAY PROGRESS ──
 function updateDayProgress() {
   const now = new Date()
-  const dayStart = new Date(now); dayStart.setHours(6, 0, 0, 0)
+  const dayStart = new Date(now); dayStart.setHours(cachedWorkDayStart, 0, 0, 0)
   const dayEnd = new Date(now); dayEnd.setHours(23, 0, 0, 0)
   const dayPct = Math.min(100, Math.max(0, ((now.getTime() - dayStart.getTime()) / (dayEnd.getTime() - dayStart.getTime())) * 100))
   const dpEl = document.getElementById('dayProgress')
   if (dpEl) dpEl.style.width = dayPct + '%'
-  const workEnd = new Date(now); workEnd.setHours(18, 0, 0, 0)
+  const workEnd = new Date(now); workEnd.setHours(cachedWorkDayEnd, 0, 0, 0)
   const workPct = Math.min(100, Math.max(0, ((now.getTime() - dayStart.getTime()) / (workEnd.getTime() - dayStart.getTime())) * 100))
   const p6El = document.getElementById('progress6pm')
   if (p6El) p6El.style.width = workPct + '%'
-  const eveningStart = new Date(now); eveningStart.setHours(18, 0, 0, 0)
+  const eveningStart = new Date(now); eveningStart.setHours(cachedWorkDayEnd, 0, 0, 0)
   const eveningEnd = new Date(now); eveningEnd.setHours(23, 0, 0, 0)
   const eveningPct = Math.min(100, Math.max(0, ((now.getTime() - eveningStart.getTime()) / (eveningEnd.getTime() - eveningStart.getTime())) * 100))
   const p11El = document.getElementById('progress11pm')
@@ -305,17 +363,30 @@ function setClockValue(id: string, ms: number) {
 
 function updateCountdowns() {
   const now = new Date()
-  const six = new Date(now); six.setHours(18, 0, 0, 0)
-  if (now > six) six.setDate(six.getDate() + 1)
-  setClockValue('cd6pm', six.getTime() - now.getTime())
+  const wde = cachedWorkDayEnd
+  const workEnd = new Date(now); workEnd.setHours(wde, 0, 0, 0)
+  const isPastWorkEnd = now >= workEnd
+
+  // Toggle evening-mode: hide left clock, expand right to full width
+  const primaryRow = document.getElementById('primaryRow')
+  if (primaryRow) primaryRow.classList.toggle('evening-mode', isPastWorkEnd)
+
+  if (!isPastWorkEnd) {
+    // Left clock: countdown to work day end
+    const target = new Date(now); target.setHours(wde, 0, 0, 0)
+    setClockValue('cd6pm', target.getTime() - now.getTime())
+    const leftLabel = document.querySelector('#primaryRow .countdown-cell-big:first-child .cd-label-big')
+    const leftSub   = document.querySelector('#primaryRow .countdown-cell-big:first-child .cd-sublabel')
+    if (leftLabel) leftLabel.textContent = `→ ${wde > 12 ? wde - 12 : wde} ${wde >= 12 ? 'PM' : 'AM'}`
+    if (leftSub)   leftSub.textContent   = 'work day ends'
+  }
 
   const eleven = new Date(now); eleven.setHours(23, 0, 0, 0)
-  const isPastSix = now >= new Date(now.getFullYear(), now.getMonth(), now.getDate(), 18, 0, 0)
   const eveningEl = document.getElementById('cd11pm')
-  const eveningLabel = document.querySelector('.countdown-cell-big:last-child .cd-label-big')
-  const eveningSub = document.querySelector('.countdown-cell-big:last-child .cd-sublabel')
+  const eveningLabel = document.querySelector('#primaryRow .countdown-cell-big:last-child .cd-label-big')
+  const eveningSub   = document.querySelector('#primaryRow .countdown-cell-big:last-child .cd-sublabel')
   if (eveningEl) {
-    if (isPastSix) {
+    if (isPastWorkEnd) {
       const rem = eleven.getTime() - now.getTime() > 0 ? eleven.getTime() - now.getTime() : 0
       setClockValue('cd11pm', rem)
       eveningEl.className = 'cd-value-big' + (rem < 3600000 ? ' red' : '')
@@ -329,7 +400,7 @@ function updateCountdowns() {
       eveningEl.className = 'cd-value-big'
       eveningEl.style.opacity = '0.25'
       if (eveningLabel) eveningLabel.textContent = '→ 11 PM'
-      if (eveningSub) eveningSub.textContent = 'starts at 6pm'
+      if (eveningSub) eveningSub.textContent = `starts at ${wde > 12 ? wde - 12 : wde}${wde >= 12 ? 'pm' : 'am'}`
     }
   }
 
@@ -714,9 +785,8 @@ function previewGate() {
 
 // ── TABS ──
 function switchTab(name: string) {
-  document.querySelectorAll('.tab').forEach((t, i) => {
-    const tabs = ['today', 'settings']
-    t.className = 'tab' + (tabs[i] === name ? ' active' : '')
+  document.querySelectorAll('.tab').forEach(t => {
+    t.className = 'tab' + (t.getAttribute('data-tab') === name ? ' active' : '')
   })
   document.querySelectorAll('.tab-content').forEach(c => c.className = 'tab-content')
   const tab = document.getElementById('tab-' + name)
@@ -883,9 +953,12 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
       cachedGoals = (goalsData ?? []).map(g => ({ id: g.id as number, text: g.text as string, icon: g.icon as string }))
 
       // Load settings
+      // Note: user_settings table needs work_day_start and work_day_end columns:
+      //   ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS work_day_start text DEFAULT '06:00';
+      //   ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS work_day_end text DEFAULT '18:00';
       const { data: settingsData } = await supabase
         .from('user_settings')
-        .select('email, phone, wake_time')
+        .select('email, phone, wake_time, work_day_start, work_day_end')
         .eq('user_id', userId)
         .maybeSingle()
 
@@ -945,6 +1018,7 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
     w.nudgeGoal = nudgeGoal
     w.deleteGoal = deleteGoal
     w.seedGoal = seedGoal
+    w.toggleArchiveExpand = toggleArchiveExpand
 
     return () => {
       clearInterval(countdownInterval)
@@ -969,24 +1043,23 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
           <div className="logo">Daily</div>
           <div className="today-date" id="todayDate"></div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: '20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div className="day-number" id="dayOfYear"></div>
           <button
-            onClick={onSignOut}
-            title={`Signed in as ${userEmail}`}
+            onClick={openDrawer}
+            aria-label="Open menu"
             style={{
               background: 'none',
               border: 'none',
               fontFamily: 'var(--mono)',
-              fontSize: '9px',
-              letterSpacing: '0.15em',
-              color: 'var(--ink-faint)',
+              fontSize: '18px',
+              color: 'var(--ink-mid)',
               cursor: 'pointer',
-              textTransform: 'uppercase',
-              padding: '0',
+              padding: '0 2px',
+              lineHeight: 1,
             }}
           >
-            sign out
+            ☰
           </button>
         </div>
       </div>
@@ -1064,8 +1137,7 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
 
       {/* Tabs */}
       <div className="tab-bar">
-        <div className="tab active" onClick={() => switchTab('today')}>Today</div>
-        <div className="tab" onClick={() => switchTab('settings')}>Settings</div>
+        <div className="tab active" data-tab="today" onClick={() => switchTab('today')}>Today</div>
       </div>
 
       {/* TODAY TAB */}
@@ -1163,25 +1235,29 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
         </div>
       </div>
 
-      {/* Archive tab content */}
-      <div className="tab-content" id="tab-archive">
-        <div style={{ padding: '32px 40px' }}>
-          <div className="panel-label"><span>Past Days</span></div>
-          <div className="archive-list" id="archiveList">
+      {/* Drawer overlay */}
+      <div className="drawer-overlay" id="drawerOverlay" onClick={closeDrawer}></div>
+
+      {/* Drawer */}
+      <div className="drawer" id="drawer">
+        <div className="drawer-header">
+          <span className="drawer-title">Menu</span>
+          <button className="drawer-close" onClick={closeDrawer}>✕</button>
+        </div>
+
+        {/* Archive */}
+        <div className="drawer-section">
+          <div className="drawer-section-label">Archive</div>
+          <div className="archive-list" id="drawerArchiveList">
             <div className="empty-state">Loading...</div>
           </div>
         </div>
-      </div>
 
-      {/* SETTINGS TAB */}
-      <div className="tab-content" id="tab-settings">
-        <div style={{ padding: '32px 40px', maxWidth: '560px' }}>
-          <div className="panel-label"><span>Settings</span></div>
-          <p style={{ fontSize: '12px', color: 'var(--ink-mid)', lineHeight: '1.7', marginBottom: '24px' }}>
-            Set once, forget it. Your contact info and wake time will be used to send your 6am daily link automatically.
-          </p>
-          <div className="notify-section">
-            <div className="notify-label">Contact Info</div>
+        {/* Settings */}
+        <div className="drawer-section">
+          <div className="drawer-section-label">Settings</div>
+          <div className="notify-section" style={{ marginTop: '12px' }}>
+            <div className="notify-label">Contact</div>
             <div className="notify-row">
               <div className="notify-field-label">Email</div>
               <input type="email" className="notify-input" id="settingsEmail" placeholder="you@email.com" onInput={saveSettings} />
@@ -1190,38 +1266,68 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
               <div className="notify-field-label">Phone</div>
               <input type="tel" className="notify-input" id="settingsPhone" placeholder="+1 (212) 555-0000" onInput={saveSettings} />
             </div>
+          </div>
+
+          <div className="notify-section" style={{ marginTop: '12px' }}>
+            <div className="notify-label">Day Schedule</div>
+            <div className="notify-row">
+              <div className="notify-field-label">Day start</div>
+              <input type="time" className="notify-input" id="settingsWdStart" defaultValue="06:00" onInput={saveSettings} />
+            </div>
+            <div className="notify-row">
+              <div className="notify-field-label">Day end</div>
+              <input type="time" className="notify-input" id="settingsWdEnd" defaultValue="18:00" onInput={saveSettings} />
+            </div>
             <div className="notify-row">
               <div className="notify-field-label">Wake time</div>
-              <input type="time" className="notify-input" id="settingsTime" defaultValue="06:00" onInput={saveSettings} />
+              <input type="time" className="notify-input" id="settingsWake" defaultValue="06:00" onInput={saveSettings} />
             </div>
             <div className="notify-status" id="settingsStatus">Not saved yet</div>
           </div>
 
-          <div className="notify-section" style={{ marginTop: '20px' }}>
+          <div className="notify-section" style={{ marginTop: '12px' }}>
             <div className="notify-label">Push Notifications</div>
-            <p style={{ fontSize: '11px', color: 'var(--ink-mid)', lineHeight: '1.7', marginBottom: '14px' }}>
-              Get a browser push notification at 6am every morning — works on mobile and desktop.
-            </p>
-            <button id="enablePushBtn" className="export-btn" onClick={registerPush} style={{ fontSize: '10px' }}>
+            <button id="enablePushBtn" className="export-btn" onClick={registerPush} style={{ fontSize: '10px', marginTop: '8px' }}>
               Enable notifications
             </button>
           </div>
 
-          <div style={{ marginTop: '28px', padding: '20px', border: '1px dashed var(--ink-faint)' }}>
-            <div style={{ fontSize: '9px', letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--ink-faint)', marginBottom: '12px' }}>Production Roadmap</div>
-            <div style={{ fontSize: '11px', color: 'var(--ink-mid)', lineHeight: '2' }}>
-              ✓ &nbsp;Supabase database (daily records persist across devices)<br />
-              ☐ &nbsp;Twilio SMS (6am text with day link)<br />
-              ☐ &nbsp;Resend email (6am email with day link)<br />
-              ☐ &nbsp;Vercel cron job (fires scheduler at 6am ET)<br />
-              ☐ &nbsp;Auth (login so data is yours, not browser-bound)<br />
-              ✓ &nbsp;Frontend complete
-            </div>
-            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--rule-dark)' }}>
-              <div style={{ fontSize: '9px', letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--ink-faint)', marginBottom: '10px' }}>Preview / Test</div>
-              <button className="export-btn" onClick={previewGate} style={{ fontSize: '10px' }}>Preview Morning Gate</button>
-            </div>
+          <div style={{ marginTop: '16px' }}>
+            <button className="export-btn" onClick={previewGate} style={{ fontSize: '10px' }}>Preview Morning Gate</button>
           </div>
+        </div>
+
+        {/* Search & Reflect — coming soon */}
+        <div className="drawer-section drawer-section-soon">
+          <div className="drawer-section-label">
+            Search &amp; Reflect
+            <span className="drawer-soon-badge">coming soon</span>
+          </div>
+          <p style={{ fontSize: '11px', color: 'var(--ink-faint)', fontStyle: 'italic', marginTop: '8px' }}>
+            Search across all your past days. Ask questions, find patterns, reflect.
+          </p>
+        </div>
+
+        {/* Footer */}
+        <div className="drawer-footer">
+          <button
+            onClick={onSignOut}
+            title={`Signed in as ${userEmail}`}
+            style={{
+              background: 'none',
+              border: 'none',
+              fontFamily: 'var(--mono)',
+              fontSize: '10px',
+              letterSpacing: '0.12em',
+              color: 'var(--ink-faint)',
+              cursor: 'pointer',
+              textTransform: 'uppercase',
+              padding: '0',
+            }}
+          >
+            Sign out
+          </button>
+          <span style={{ fontSize: '10px', color: 'var(--ink-faint)', opacity: 0.5 }}>{userEmail}</span>
         </div>
       </div>
 
