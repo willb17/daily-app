@@ -13,20 +13,16 @@ interface Task {
   anchorH?: number | null
   anchorMin?: number | null
   carriedFrom?: string
-  fromGoal?: boolean
 }
 interface DayData { tasks: Task[]; notes: string }
-interface Goal { id: number; text: string; icon: string }
 interface ArchiveEntry { date: string; tasks: Task[]; notes: string }
 
 // ── MODULE-LEVEL STATE ──
 // These are module-level so all the imperative DOM functions can reference them
 // without prop-drilling. They're reset in useEffect when the component mounts.
 let state: DayData = { tasks: [], notes: '' }
-let currentType: 'task' | 'anchor' | 'habit' = 'task'
 let currentTaskPriority: 'must' | 'should' | 'could' = 'should'
 let currentUserId = ''
-let cachedGoals: Goal[] = []
 let cachedArchiveEntries: ArchiveEntry[] = []
 let cachedYesterdayData: DayData | null = null
 let cachedSettingsEmail = ''
@@ -149,67 +145,6 @@ function applySettings(s: { email?: string; phone?: string; wake_time?: string; 
   }
 }
 
-// ── GOALS (Supabase rows) ──
-const GOAL_ICONS = ['◎', '▷', '◇', '△', '□', '○', '⬡', '◈']
-
-function loadGoals(): Goal[] { return cachedGoals }
-
-async function addGoal() {
-  if (!currentUserId) return
-  const input = document.getElementById('goalInput') as HTMLInputElement | null
-  if (!input) return
-  const text = input.value.trim()
-  if (!text) return
-  const icon = GOAL_ICONS[cachedGoals.length % GOAL_ICONS.length]
-
-  const { data, error } = await supabase
-    .from('goals')
-    .insert({ user_id: currentUserId, text, icon })
-    .select()
-    .single()
-
-  if (!error && data) {
-    cachedGoals.push({ id: data.id, text: data.text, icon: data.icon })
-    renderGoals()
-  }
-  input.value = ''
-  input.focus()
-}
-
-async function deleteGoal(id: number) {
-  await supabase.from('goals').delete().eq('id', id).eq('user_id', currentUserId)
-  cachedGoals = cachedGoals.filter(g => g.id !== id)
-  renderGoals()
-}
-
-function nudgeGoal(id: number) {
-  const goal = cachedGoals.find(g => g.id === id)
-  if (!goal) return
-  const alreadyAdded = state.tasks.some(t => t.text === goal.text && t.type === 'task')
-  if (!alreadyAdded) {
-    state.tasks.push({ id: Date.now(), text: goal.text, type: 'task', done: false, fromGoal: true })
-    saveDay(state)
-    renderTasks()
-    updateStats()
-  }
-  const btn = document.querySelector(`[data-goal-nudge="${id}"]`) as HTMLElement | null
-  if (btn) { btn.textContent = '✓ added'; btn.className = 'goal-nudge-btn added' }
-}
-
-async function seedGoal(text: string) {
-  if (cachedGoals.some(g => g.text === text)) return
-  if (!currentUserId) return
-  const icon = GOAL_ICONS[cachedGoals.length % GOAL_ICONS.length]
-  const { data, error } = await supabase
-    .from('goals')
-    .insert({ user_id: currentUserId, text, icon })
-    .select()
-    .single()
-  if (!error && data) {
-    cachedGoals.push({ id: data.id, text: data.text, icon: data.icon })
-    renderGoals()
-  }
-}
 
 // ── ARCHIVE (Supabase daily_entries, past dates) ──
 async function renderArchive() {
@@ -465,24 +400,6 @@ function updateCountdowns() {
 }
 
 // ── TASKS ──
-function setType(t: 'task' | 'anchor' | 'habit') {
-  currentType = t
-  const taskBtn   = document.getElementById('toggleTask')
-  const anchorBtn = document.getElementById('toggleAnchor')
-  const habitBtn  = document.getElementById('toggleHabit')
-  if (taskBtn)   taskBtn.className   = 'toggle-btn' + (t === 'task'   ? ' active' : '')
-  if (anchorBtn) anchorBtn.className = 'toggle-btn' + (t === 'anchor' ? ' active' : '')
-  if (habitBtn)  habitBtn.className  = 'toggle-btn' + (t === 'habit'  ? ' active' : '')
-  const timeInput = document.getElementById('anchorTime') as HTMLInputElement | null
-  if (timeInput) timeInput.style.display = t === 'anchor' ? 'block' : 'none'
-  const taskInput = document.getElementById('taskInput') as HTMLInputElement | null
-  if (taskInput) {
-    if (t === 'anchor') taskInput.placeholder = 'e.g. "call aunt m at 5" or "dinner with Noah"...'
-    else if (t === 'habit') taskInput.placeholder = 'add a recurring habit...'
-    else taskInput.placeholder = 'add something to do...'
-  }
-}
-
 function parseTimeFromText(text: string) {
   // Each entry: [regex, hourGroup, minGroup, meridiemGroup]
   // Ordered most-specific first so longer matches win.
@@ -582,20 +499,6 @@ function addItem() {
   input.value = ''; input.focus()
 }
 
-async function addHabit() {
-  const input = document.getElementById('habitInput') as HTMLInputElement | null
-  if (!input || !currentUserId) return
-  const text = input.value.trim()
-  if (!text) return
-  const icon = GOAL_ICONS[cachedGoals.length % GOAL_ICONS.length]
-  const { data, error } = await supabase.from('goals').insert({ user_id: currentUserId, text, icon }).select().single()
-  if (!error && data) {
-    cachedGoals.push({ id: data.id, text: data.text, icon: data.icon })
-    state.tasks.push({ id: Date.now(), type: 'task', text, done: false, fromGoal: true })
-    saveDay(state); renderTasks(); updateStats()
-  }
-  input.value = ''; input.focus()
-}
 
 function toggleDone(id: number) {
   const item = state.tasks.find(t => t.id === id)
@@ -646,28 +549,6 @@ function renderTasks() {
     }
   }
 
-  // Habit suggestions: habits not yet on today's list
-  const suggestEl = document.getElementById('habitSuggestions')
-  if (suggestEl) {
-    const activeTasks = state.tasks.filter(t => t.type === 'task')
-    const activeTexts = new Set(activeTasks.map(t => t.text))
-    const pending = cachedGoals.filter(g => !activeTexts.has(g.text))
-    if (!pending.length) {
-      suggestEl.innerHTML = ''
-    } else {
-      suggestEl.innerHTML = `
-        <div class="habit-suggestions">
-          <div class="task-section-header">Habits</div>
-          ${pending.map(g => `
-            <div class="habit-suggest-item">
-              <span class="habit-icon">${g.icon}</span>
-              <span class="habit-text">${escapeHTML(g.text)}</span>
-              <button class="habit-add-btn" onclick="nudgeGoal(${g.id})">+ today</button>
-              <button class="habit-delete-btn" onclick="deleteGoal(${g.id})" title="Remove habit">×</button>
-            </div>`).join('')}
-        </div>`
-    }
-  }
 }
 
 function updateStats() {
@@ -979,39 +860,6 @@ function exitFocus() {
   renderTasks(); updateStats()
 }
 
-// ── GOALS RENDER ──
-function renderGoals() {
-  const goals = loadGoals()
-  const el = document.getElementById('goalsList')
-  if (!el) return
-  if (!goals.length) {
-    el.innerHTML = `
-      <div style="grid-column:1/-1;padding:16px 0 8px;">
-        <div style="font-size:11px;color:var(--ink-faint);font-style:italic;margin-bottom:16px;">
-          Nothing here yet. Add habits or intentions you want to do every day — they'll live here permanently so you can decide each morning whether to put them on today's list.
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          ${['read for an hour', 'go to the gym', 'meditate', 'no phone before 9am'].map(ex =>
-            `<button onclick="seedGoal('${ex}')" style="background:var(--paper-dark);border:1px solid var(--rule-dark);font-family:var(--mono);font-size:10px;color:var(--ink-light);padding:6px 12px;cursor:pointer;letter-spacing:0.05em;transition:all 0.15s;" onmouseover="this.style.borderColor='var(--ink-faint)'" onmouseout="this.style.borderColor='var(--rule-dark)'">${ex}</button>`
-          ).join('')}
-        </div>
-      </div>`
-    return
-  }
-  const todayTexts = new Set(state.tasks.map(t => t.text))
-  el.innerHTML = goals.map(g => {
-    const added = todayTexts.has(g.text)
-    return `
-      <div class="goal-card">
-        <span class="goal-icon">${g.icon}</span>
-        <span class="goal-text">${escapeHTML(g.text)}</span>
-        <button class="goal-nudge-btn ${added ? 'added' : ''}" data-goal-nudge="${g.id}" onclick="nudgeGoal(${g.id})">
-          ${added ? '✓ on list' : '+ today'}
-        </button>
-        <button class="goal-delete-btn" onclick="deleteGoal(${g.id})">×</button>
-      </div>`
-  }).join('')
-}
 
 // ── REACT COMPONENT ──
 interface Props {
@@ -1044,14 +892,6 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
       cachedYesterdayData = yEntry
         ? { tasks: (yEntry.tasks ?? []) as Task[], notes: yEntry.notes ?? '' }
         : null
-
-      // Load goals
-      const { data: goalsData } = await supabase
-        .from('goals')
-        .select('id, text, icon')
-        .eq('user_id', userId)
-        .order('id', { ascending: true })
-      cachedGoals = (goalsData ?? []).map(g => ({ id: g.id as number, text: g.text as string, icon: g.icon as string }))
 
       // Load settings
       // Note: user_settings table needs work_day_start and work_day_end columns:
@@ -1115,9 +955,6 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
     w.deleteItem = deleteItem
     w.enterFocus = enterFocus
     w.viewArchiveDay = viewArchiveDay
-    w.nudgeGoal = nudgeGoal
-    w.deleteGoal = deleteGoal
-    w.seedGoal = seedGoal
     w.toggleArchiveExpand = toggleArchiveExpand
 
     return () => {
@@ -1299,20 +1136,6 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
               </div>
             </div>
 
-            {/* Habits section */}
-            <div className="task-section">
-              <div id="habitSuggestions"></div>
-              <div className="inline-add-row" style={{ marginTop: '8px' }}>
-                <input
-                  type="text"
-                  className="task-input"
-                  id="habitInput"
-                  placeholder="add a recurring habit..."
-                  onKeyDown={e => { if (e.key === 'Enter') addHabit() }}
-                />
-                <button className="add-btn" onClick={addHabit} title="Add habit">+ habit</button>
-              </div>
-            </div>
           </div>
 
           {/* RIGHT: Notes */}
