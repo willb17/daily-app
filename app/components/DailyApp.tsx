@@ -562,28 +562,23 @@ function setTaskPriority(p: 'must' | 'should' | 'could') {
   })
 }
 
-function addTask() {
-  const input = document.getElementById('taskInput') as HTMLInputElement | null
-  if (!input) return
-  const text = input.value.trim()
-  if (!text) return
-  state.tasks.push({ id: Date.now(), type: 'task', text, done: false, priority: currentTaskPriority })
-  saveDay(state); renderTasks(); updateStats()
-  input.value = ''; input.focus()
-  currentTaskPriority = 'should'
-  setTaskPriority('should')
-}
-
-function addAnchor() {
-  const input = document.getElementById('anchorInput') as HTMLInputElement | null
+function addItem() {
+  const input = document.getElementById('itemInput') as HTMLInputElement | null
   if (!input) return
   const text = input.value.trim()
   if (!text) return
   const parsed = parseTimeFromText(text)
-  const item: Task = { id: Date.now(), type: 'anchor', text, done: false }
-  if (parsed) { item.anchorH = parsed.h; item.anchorMin = parsed.min; item.text = parsed.cleaned || text }
-  else        { item.anchorH = null; item.anchorMin = null }
-  state.tasks.push(item); saveDay(state); renderTasks(); updateStats()
+  if (parsed) {
+    // Has a time → anchor
+    const item: Task = { id: Date.now(), type: 'anchor', text: parsed.cleaned || text, done: false, anchorH: parsed.h, anchorMin: parsed.min }
+    state.tasks.push(item)
+  } else {
+    // No time → task
+    state.tasks.push({ id: Date.now(), type: 'task', text, done: false, priority: currentTaskPriority })
+    currentTaskPriority = 'should'
+    setTaskPriority('should')
+  }
+  saveDay(state); renderTasks(); updateStats()
   input.value = ''; input.focus()
 }
 
@@ -617,43 +612,36 @@ function deleteItem(id: number) {
 function renderTasks() {
   const anchors = [...state.tasks.filter(t => t.type === 'anchor')].sort(timeSort)
   const tasks = state.tasks.filter(t => t.type === 'task')
+  const unified = [...anchors, ...tasks]
 
-  const anchorEl = document.getElementById('anchorList')
-  if (anchorEl) {
-    if (!anchors.length) {
-      anchorEl.innerHTML = `<div class="empty-state">No anchors yet — meetings, dinners, events</div>`
+  const listEl = document.getElementById('unifiedList')
+  if (listEl) {
+    if (!unified.length) {
+      listEl.innerHTML = `<div class="empty-state">No items yet — type anything to add a task, or include a time for an anchor</div>`
     } else {
-      anchorEl.innerHTML = anchors.map(item => {
-        const hasTime = item.anchorH != null
-        const timeStr = hasTime ? formatTime(item.anchorH!, item.anchorMin || 0) : ''
-        return `
-          <div class="task-item ${item.done ? 'done' : ''}" id="item-${item.id}">
-            <input type="checkbox" class="task-check" ${item.done ? 'checked' : ''} onchange="toggleDone(${item.id})">
-            ${hasTime ? `<span class="anchor-time-badge">${escapeHTML(timeStr)}</span><span style="color:var(--ink-faint);font-size:12px;margin:0 4px 0 0;flex-shrink:0">—</span>` : ''}
-            <span class="${hasTime ? 'anchor-desc' : 'task-text'}">${escapeHTML(item.text)}</span>
-            <button class="delete-btn" onclick="deleteItem(${item.id})">×</button>
-          </div>`
-      }).join('')
-    }
-  }
-
-  const taskEl = document.getElementById('taskList')
-  if (taskEl) {
-    if (!tasks.length) {
-      taskEl.innerHTML = `<div class="empty-state">No tasks yet — what needs to get done today?</div>`
-    } else {
-      taskEl.innerHTML = tasks.map(item => {
-        const pri = item.priority || 'should'
-        const priDot = pri === 'must' ? '●' : pri === 'should' ? '◐' : '○'
-        const priClass = `priority-dot priority-${pri}`
-        return `
-        <div class="task-item ${item.done ? 'done' : ''}" id="item-${item.id}">
-          <input type="checkbox" class="task-check" ${item.done ? 'checked' : ''} onchange="toggleDone(${item.id})">
-          <span class="${priClass}" title="${pri}">${priDot}</span>
-          <span class="task-text">${escapeHTML(item.text)}</span>
-          <button class="focus-btn" onclick="enterFocus(${item.id})" title="Focus on this task">▶ focus</button>
-          <button class="delete-btn" onclick="deleteItem(${item.id})">×</button>
-        </div>`
+      listEl.innerHTML = unified.map(item => {
+        if (item.type === 'anchor') {
+          const hasTime = item.anchorH != null
+          const timeStr = hasTime ? formatTime(item.anchorH!, item.anchorMin || 0) : ''
+          return `
+            <div class="task-item ${item.done ? 'done' : ''}" id="item-${item.id}">
+              <input type="checkbox" class="task-check" ${item.done ? 'checked' : ''} onchange="toggleDone(${item.id})">
+              ${hasTime ? `<span class="anchor-time-badge">${escapeHTML(timeStr)}</span><span class="anchor-sep">—</span>` : ''}
+              <span class="anchor-desc">${escapeHTML(item.text)}</span>
+              <button class="delete-btn" onclick="deleteItem(${item.id})">×</button>
+            </div>`
+        } else {
+          const pri = item.priority || 'should'
+          const dot = pri === 'must' ? '●' : pri === 'should' ? '◐' : '○'
+          return `
+            <div class="task-item ${item.done ? 'done' : ''}" id="item-${item.id}">
+              <input type="checkbox" class="task-check" ${item.done ? 'checked' : ''} onchange="toggleDone(${item.id})">
+              <span class="priority-dot priority-${pri}" title="${pri}">${dot}</span>
+              <span class="task-text">${escapeHTML(item.text)}</span>
+              <button class="focus-btn" onclick="enterFocus(${item.id})" title="Focus on this task">▶ focus</button>
+              <button class="delete-btn" onclick="deleteItem(${item.id})">×</button>
+            </div>`
+        }
       }).join('')
     }
   }
@@ -1291,10 +1279,9 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
               </div>
             </div>
 
-            {/* Tasks section */}
+            {/* Unified task + anchor list */}
             <div className="task-section">
-              <div className="task-section-header">Tasks</div>
-              <div id="taskList"><div className="empty-state">No tasks yet — what needs to get done today?</div></div>
+              <div id="unifiedList"><div className="empty-state">No items yet — type anything to add a task, or include a time for an anchor</div></div>
               <div className="inline-add-row">
                 <div className="priority-toggle">
                   <button className="priority-btn" data-priority="must" onClick={() => setTaskPriority('must')} title="Must do">●</button>
@@ -1304,27 +1291,11 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
                 <input
                   type="text"
                   className="task-input"
-                  id="taskInput"
-                  placeholder="add a task..."
-                  onKeyDown={e => { if (e.key === 'Enter') addTask() }}
+                  id="itemInput"
+                  placeholder='task, or "945 standup" for a timed anchor'
+                  onKeyDown={e => { if (e.key === 'Enter') addItem() }}
                 />
-                <button className="add-btn" onClick={addTask}>+</button>
-              </div>
-            </div>
-
-            {/* Anchors section */}
-            <div className="task-section" id="anchorSection">
-              <div className="task-section-header">Anchors — fixed events</div>
-              <div id="anchorList"><div className="empty-state">No anchors yet — meetings, dinners, deadlines</div></div>
-              <div className="inline-add-row">
-                <input
-                  type="text"
-                  className="task-input"
-                  id="anchorInput"
-                  placeholder='e.g. "945 call hamzah" or "dinner 7pm"'
-                  onKeyDown={e => { if (e.key === 'Enter') addAnchor() }}
-                />
-                <button className="add-btn" onClick={addAnchor}>+</button>
+                <button className="add-btn" onClick={addItem}>+</button>
               </div>
             </div>
 

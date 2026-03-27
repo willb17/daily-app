@@ -307,6 +307,7 @@ body {
   line-height: 1.5;
 }
 
+.anchor-sep { color: var(--ink-faint); font-size: 12px; margin: 0 4px 0 0; flex-shrink: 0; }
 .task-item.done .anchor-time-badge { color: var(--ink-faint); }
 .task-item.done .anchor-desc { color: var(--ink-faint); text-decoration: line-through; }
 
