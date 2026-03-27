@@ -9,6 +9,7 @@ interface Task {
   type: 'task' | 'anchor'
   text: string
   done: boolean
+  priority?: 'must' | 'should' | 'could'
   anchorH?: number | null
   anchorMin?: number | null
   carriedFrom?: string
@@ -23,6 +24,7 @@ interface ArchiveEntry { date: string; tasks: Task[]; notes: string }
 // without prop-drilling. They're reset in useEffect when the component mounts.
 let state: DayData = { tasks: [], notes: '' }
 let currentType: 'task' | 'anchor' | 'habit' = 'task'
+let currentTaskPriority: 'must' | 'should' | 'could' = 'should'
 let currentUserId = ''
 let cachedGoals: Goal[] = []
 let cachedArchiveEntries: ArchiveEntry[] = []
@@ -552,14 +554,24 @@ function timeSort(a: Task, b: Task) {
   return aMin - bMin
 }
 
+function setTaskPriority(p: 'must' | 'should' | 'could') {
+  currentTaskPriority = p
+  const btns = document.querySelectorAll<HTMLButtonElement>('.priority-btn')
+  btns.forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.priority === p)
+  })
+}
+
 function addTask() {
   const input = document.getElementById('taskInput') as HTMLInputElement | null
   if (!input) return
   const text = input.value.trim()
   if (!text) return
-  state.tasks.push({ id: Date.now(), type: 'task', text, done: false })
+  state.tasks.push({ id: Date.now(), type: 'task', text, done: false, priority: currentTaskPriority })
   saveDay(state); renderTasks(); updateStats()
   input.value = ''; input.focus()
+  currentTaskPriority = 'should'
+  setTaskPriority('should')
 }
 
 function addAnchor() {
@@ -630,13 +642,19 @@ function renderTasks() {
     if (!tasks.length) {
       taskEl.innerHTML = `<div class="empty-state">No tasks yet — what needs to get done today?</div>`
     } else {
-      taskEl.innerHTML = tasks.map(item => `
+      taskEl.innerHTML = tasks.map(item => {
+        const pri = item.priority || 'should'
+        const priDot = pri === 'must' ? '●' : pri === 'should' ? '◐' : '○'
+        const priClass = `priority-dot priority-${pri}`
+        return `
         <div class="task-item ${item.done ? 'done' : ''}" id="item-${item.id}">
           <input type="checkbox" class="task-check" ${item.done ? 'checked' : ''} onchange="toggleDone(${item.id})">
+          <span class="${priClass}" title="${pri}">${priDot}</span>
           <span class="task-text">${escapeHTML(item.text)}</span>
           <button class="focus-btn" onclick="enterFocus(${item.id})" title="Focus on this task">▶ focus</button>
           <button class="delete-btn" onclick="deleteItem(${item.id})">×</button>
-        </div>`).join('')
+        </div>`
+      }).join('')
     }
   }
 
@@ -1278,6 +1296,11 @@ export default function DailyApp({ userId, userEmail, onSignOut }: Props) {
               <div className="task-section-header">Tasks</div>
               <div id="taskList"><div className="empty-state">No tasks yet — what needs to get done today?</div></div>
               <div className="inline-add-row">
+                <div className="priority-toggle">
+                  <button className="priority-btn" data-priority="must" onClick={() => setTaskPriority('must')} title="Must do">●</button>
+                  <button className="priority-btn active" data-priority="should" onClick={() => setTaskPriority('should')} title="Should do">◐</button>
+                  <button className="priority-btn" data-priority="could" onClick={() => setTaskPriority('could')} title="Could do">○</button>
+                </div>
                 <input
                   type="text"
                   className="task-input"

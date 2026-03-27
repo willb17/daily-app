@@ -34,6 +34,7 @@ import webpush from 'web-push'
 import { Resend } from 'resend'
 
 const APP_URL = 'https://daily-app-virid.vercel.app'
+const NUDGE_URL = `${APP_URL}/nudge`
 
 export async function GET(request: NextRequest) {
   // ── AUTH ────────────────────────────────────────────────────────────────
@@ -126,7 +127,7 @@ export async function GET(request: NextRequest) {
           JSON.stringify({
             title: 'Good morning',
             body: 'Your day is ready.',
-            url: APP_URL,
+            url: NUDGE_URL,
           })
         )
         results.push.sent++
@@ -159,7 +160,7 @@ export async function GET(request: NextRequest) {
       <td style="padding:32px 0 24px;">
         <p style="margin:0 0 16px;font-size:13px;line-height:1.7;color:#4A4640;">Good morning.</p>
         <p style="margin:0 0 32px;font-size:13px;line-height:1.7;color:#4A4640;">Your day is ready.</p>
-        <a href="${APP_URL}"
+        <a href="${NUDGE_URL}"
            style="display:inline-block;background:#1A1814;color:#F5F0E8;padding:14px 28px;
                   font-family:'Courier New',monospace;font-size:11px;letter-spacing:0.15em;
                   text-transform:uppercase;text-decoration:none;">
