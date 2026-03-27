@@ -28,6 +28,7 @@ let cachedYesterdayData: DayData | null = null
 let cachedSettingsEmail = ''
 let cachedWorkDayStart = 6   // hours (24h), from user_settings.work_day_start
 let cachedWorkDayEnd   = 18  // hours (24h), from user_settings.work_day_end
+let cachedRawSettings: { email?: string; phone?: string; wake_time?: string; work_day_start?: string; work_day_end?: string } | null = null
 
 let focusDuration = 25
 let focusRemaining = 25 * 60
@@ -128,6 +129,7 @@ async function saveSettings() {
 
 function applySettings(s: { email?: string; phone?: string; wake_time?: string; work_day_start?: string; work_day_end?: string } | null) {
   if (!s) return
+  cachedRawSettings = s
   const emailEl   = document.getElementById('settingsEmail')   as HTMLInputElement | null
   const phoneEl   = document.getElementById('settingsPhone')   as HTMLInputElement | null
   const wakeEl    = document.getElementById('settingsWake')    as HTMLInputElement | null
@@ -216,6 +218,7 @@ function toggleArchiveExpand(date: string) {
 // ── DRAWER ──
 function openDrawer() {
   renderDrawerArchive()
+  if (cachedRawSettings) applySettings(cachedRawSettings)
   document.getElementById('drawer')?.classList.add('open')
   document.getElementById('drawerOverlay')?.classList.add('open')
   document.body.style.overflow = 'hidden'
